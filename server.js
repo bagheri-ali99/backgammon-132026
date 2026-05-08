@@ -12,156 +12,163 @@ const io = new Server(server, {
 cors: { origin: ‘*’, methods: [‘GET’, ‘POST’] }
 });
 
-// ===== STATE =====
-const waitingPlayers = {}; // bet -> [socket]
-const rooms = {};          // roomId -> {players, gameState, …}
-const playerRoom = {};     // socketId -> roomId
+const WIN_AMOUNTS = { 76: 140, 152: 280, 304: 560 };
+const SUPABASE_URL = ‘https://bmfxcrgaavbeidakeqiw.supabase.co’;
+const SUPABASE_KEY = ‘eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJtZnhjcmdhYXZiZWlkYWtlcWl3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgxMDQ2MzQsImV4cCI6MjA5MzY4MDYzNH0.Sucl9zCtlu433X0nEjOkJ3fSD_drRtWJIGyrNJZkOfA’;
 
-// ===== MATCHMAKING =====
+const waitingPlayers = {};
+const rooms = {};
+const playerRoom = {};
+
+async function supaFetch(path, method=‘GET’, body=null) {
+const res = await fetch(SUPABASE_URL + ‘/rest/v1/’ + path, {
+method,
+headers: {
+‘apikey’: SUPABASE_KEY,
+‘Authorization’: ’Bearer ’ + SUPABASE_KEY,
+‘Content-Type’: ‘application/json’,
+‘Prefer’: method === ‘POST’ ? ‘return=representation’ : ‘’
+},
+body: body ? JSON.stringify(body) : null
+});
+return res.json();
+}
+
+async function getUser(tid) {
+const data = await supaFetch(‘users?telegram_id=eq.’ + tid + ‘&select=*’);
+return data[0] || null;
+}
+
+async function upsertUser(tid, username) {
+let user = await getUser(tid);
+if (!user) {
+const data = await supaFetch(‘users’, ‘POST’, { telegram_id: tid, username, balance: 0 });
+return data[0];
+}
+return user;
+}
+
+async function addBalance(tid, amount, type, desc) {
+const user = await getUser(tid);
+if (!user) return;
+const newBal = (user.balance || 0) + amount;
+await supaFetch(‘users?telegram_id=eq.’ + tid, ‘PATCH’, { balance: newBal });
+await supaFetch(‘transactions’, ‘POST’, { telegram_id: tid, amount, type, description: desc });
+return newBal;
+}
+
 io.on(‘connection’, (socket) => {
-console.log(‘✅ connected:’, socket.id);
+console.log(‘connected:’, socket.id);
 
-// Player joins queue
-socket.on(‘join_queue’, ({ name, bet, stars }) => {
+socket.on(‘init_user’, async ({ telegramId, username }) => {
+const user = await upsertUser(telegramId, username);
+socket.data.telegramId = telegramId;
+socket.emit(‘user_data’, { balance: user ? user.balance : 0 });
+});
+
+socket.on(‘join_queue’, async ({ name, bet, telegramId }) => {
 socket.data.name = name;
 socket.data.bet = bet;
-socket.data.stars = stars;
+socket.data.telegramId = telegramId;
 
 ```
 if (!waitingPlayers[bet]) waitingPlayers[bet] = [];
-
-// Check if someone is already waiting with same bet
 const waiting = waitingPlayers[bet].find(s => s.id !== socket.id && s.connected);
 
 if (waiting) {
-  // Match found!
   waitingPlayers[bet] = waitingPlayers[bet].filter(s => s.id !== waiting.id);
-
   const roomId = Math.random().toString(36).substr(2, 8);
-  const whitePlayer = Math.random() > 0.5 ? socket : waiting;
-  const blackPlayer = whitePlayer.id === socket.id ? waiting : socket;
 
   rooms[roomId] = {
-    id: roomId,
-    bet,
+    id: roomId, bet,
     players: {
-      white: { id: whitePlayer.id, name: whitePlayer.data.name },
-      black: { id: blackPlayer.id, name: blackPlayer.data.name }
+      p1: { id: socket.id, name, telegramId },
+      p2: { id: waiting.id, name: waiting.data.name, telegramId: waiting.data.telegramId }
     },
-    turn: 'white',
-    gameState: null,
-    chat: []
+    choices: {}, scores: { [socket.id]: 0, [waiting.id]: 0 }
   };
 
   playerRoom[socket.id] = roomId;
   playerRoom[waiting.id] = roomId;
-
   socket.join(roomId);
   waiting.join(roomId);
 
-  // Notify both players
   io.to(roomId).emit('match_found', {
     roomId,
-    white: rooms[roomId].players.white,
-    black: rooms[roomId].players.black,
+    white: rooms[roomId].players.p1,
+    black: rooms[roomId].players.p2,
     bet
   });
-
-  console.log(`🎲 Match: ${whitePlayer.data.name} vs ${blackPlayer.data.name} | bet:${bet}`);
 } else {
-  // Wait for opponent
   waitingPlayers[bet].push(socket);
-  socket.emit('waiting', { message: 'دنبال حریف می‌گردیم...' });
+  socket.emit('waiting', {});
 }
 ```
 
 });
 
-// Cancel queue
 socket.on(‘cancel_queue’, () => {
 const bet = socket.data.bet;
 if (bet && waitingPlayers[bet]) {
 waitingPlayers[bet] = waitingPlayers[bet].filter(s => s.id !== socket.id);
 }
-socket.emit(‘queue_cancelled’);
 });
 
-// Game move
-socket.on(‘game_move’, ({ roomId, from, to, diceUsed }) => {
-socket.to(roomId).emit(‘opponent_move’, { from, to, diceUsed });
-});
-
-// Dice roll
-socket.on(‘dice_rolled’, ({ roomId, dice }) => {
-socket.to(roomId).emit(‘opponent_dice’, { dice });
-});
-
-// Pass turn
-socket.on(‘pass_turn’, ({ roomId }) => {
-socket.to(roomId).emit(‘opponent_passed’);
-});
-
-// RPS choice
 socket.on(‘rps_choice’, ({ roomId, choice }) => {
-socket.to(roomId).emit(‘opponent_choice’, { choice });
-});
-
-// Game over
-socket.on(‘game_over’, ({ roomId, winnerId }) => {
 const room = rooms[roomId];
 if (!room) return;
-io.to(roomId).emit(‘game_result’, { winnerId, bet: room.bet });
+room.choices[socket.id] = choice;
+socket.to(roomId).emit(‘opponent_choice’, { choice });
+
+```
+const ids = Object.keys(room.choices);
+if (ids.length === 2) {
+  const [a, b] = ids;
+  io.to(roomId).emit('round_resolved', {
+    p1id: a, p1choice: room.choices[a],
+    p2id: b, p2choice: room.choices[b]
+  });
+  room.choices = {};
+}
+```
+
+});
+
+socket.on(‘game_over’, async ({ roomId, winnerId, loserId }) => {
+const room = rooms[roomId];
+if (!room || room.settled) return;
+room.settled = true;
+
+```
+const bet = room.bet;
+const winAmount = WIN_AMOUNTS[bet] || bet * 2;
+const winner = Object.values(room.players).find(p => p.id === winnerId);
+const loser = Object.values(room.players).find(p => p.id === loserId);
+
+if (winner && winner.telegramId) await addBalance(winner.telegramId, winAmount, 'win', 'Won RPS bet:' + bet);
+if (loser && loser.telegramId) await addBalance(loser.telegramId, -bet, 'lose', 'Lost RPS bet:' + bet);
+
+io.to(roomId).emit('game_result', { winnerId, winAmount, bet });
 delete rooms[roomId];
-// cleanup playerRoom
-Object.keys(playerRoom).forEach(k => {
-if (playerRoom[k] === roomId) delete playerRoom[k];
-});
+```
+
 });
 
-// Chat
-socket.on(‘chat_message’, ({ roomId, text }) => {
-socket.to(roomId).emit(‘opponent_chat’, {
-name: socket.data.name,
-text
-});
-});
-
-// Get online count
 socket.on(‘get_online’, () => {
 socket.emit(‘online_count’, { count: io.engine.clientsCount });
 });
 
-// Disconnect
 socket.on(‘disconnect’, () => {
-console.log(‘❌ disconnected:’, socket.id);
-
-```
-// Remove from queue
 const bet = socket.data.bet;
-if (bet && waitingPlayers[bet]) {
-  waitingPlayers[bet] = waitingPlayers[bet].filter(s => s.id !== socket.id);
-}
-
-// Notify room opponent
+if (bet && waitingPlayers[bet]) waitingPlayers[bet] = waitingPlayers[bet].filter(s => s.id !== socket.id);
 const roomId = playerRoom[socket.id];
-if (roomId && rooms[roomId]) {
-  socket.to(roomId).emit('opponent_left');
-  delete rooms[roomId];
-}
+if (roomId && rooms[roomId]) socket.to(roomId).emit(‘opponent_left’);
+delete rooms[roomId];
 delete playerRoom[socket.id];
-```
-
 });
 });
 
-// Health check
-app.get(’/’, (req, res) => {
-res.json({
-status: ‘ok’,
-players: io.engine.clientsCount,
-rooms: Object.keys(rooms).length
-});
-});
+app.get(’/’, (req, res) => res.json({ status: ‘ok’, players: io.engine.clientsCount }));
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(‘Server on port’, PORT));
