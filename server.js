@@ -114,45 +114,71 @@ waitingPlayers[bet] = waitingPlayers[bet].filter(s => s.id !== socket.id);
 }
 });
 
-socket.on(‘rps_choice’, ({ roomId, choice }) => {
+socket.on(‘rps_choice’, async ({ roomId, choice }) => {
 const room = rooms[roomId];
-if (!room) return;
-room.choices[socket.id] = choice;
-socket.to(roomId).emit(‘opponent_choice’, { choice });
+if (!room || room.settled) return;
 
 ```
+// Validate choice
+if (!['rock','paper','scissors'].includes(choice)) return;
+
+room.choices[socket.id] = choice;
+socket.to(roomId).emit('opponent_choice', { choice });
+
 const ids = Object.keys(room.choices);
 if (ids.length === 2) {
   const [a, b] = ids;
-  io.to(roomId).emit('round_resolved', {
-    p1id: a, p1choice: room.choices[a],
-    p2id: b, p2choice: room.choices[b]
-  });
+  const ca = room.choices[a];
+  const cb = room.choices[b];
+
+  // Server decides winner
+  let roundWinner = null;
+  if (ca !== cb) {
+    if ((ca==='rock'&&cb==='scissors') || (ca==='scissors'&&cb==='paper') || (ca==='paper'&&cb==='rock')) {
+      roundWinner = a;
+    } else {
+      roundWinner = b;
+    }
+    room.scores[roundWinner] = (room.scores[roundWinner] || 0) + 1;
+  }
+
   room.choices = {};
+
+  io.to(roomId).emit('round_resolved', {
+    p1id: a, p1choice: ca,
+    p2id: b, p2choice: cb,
+    roundWinner,
+    scores: room.scores
+  });
+
+  // Check if match over (first to 3)
+  const winnerId = Object.keys(room.scores).find(id => room.scores[id] >= 3);
+  if (winnerId && !room.settled) {
+    room.settled = true;
+    const loserId = Object.keys(room.scores).find(id => id !== winnerId);
+    const bet = room.bet;
+    const winAmount = WIN_AMOUNTS[bet] || bet * 2;
+    const winner = Object.values(room.players).find(p => p.id === winnerId);
+    const loser = Object.values(room.players).find(p => p.id === loserId);
+
+    // Update balances in Supabase
+    if (winner && winner.telegramId) {
+      await addBalance(winner.telegramId, winAmount, 'win', 'Won RPS bet:' + bet);
+    }
+    if (loser && loser.telegramId) {
+      await addBalance(loser.telegramId, -bet, 'lose', 'Lost RPS bet:' + bet);
+    }
+
+    io.to(roomId).emit('match_over', { winnerId, loserId, winAmount, bet });
+    setTimeout(() => delete rooms[roomId], 5000);
+  }
 }
 ```
 
 });
 
-socket.on(‘game_over’, async ({ roomId, winnerId, loserId }) => {
-const room = rooms[roomId];
-if (!room || room.settled) return;
-room.settled = true;
-
-```
-const bet = room.bet;
-const winAmount = WIN_AMOUNTS[bet] || bet * 2;
-const winner = Object.values(room.players).find(p => p.id === winnerId);
-const loser = Object.values(room.players).find(p => p.id === loserId);
-
-if (winner && winner.telegramId) await addBalance(winner.telegramId, winAmount, 'win', 'Won RPS bet:' + bet);
-if (loser && loser.telegramId) await addBalance(loser.telegramId, -bet, 'lose', 'Lost RPS bet:' + bet);
-
-io.to(roomId).emit('game_result', { winnerId, winAmount, bet });
-delete rooms[roomId];
-```
-
-});
+// game_over from client is now ignored - server decides
+socket.on(‘game_over’, () => {});
 
 socket.on(‘get_online’, () => {
 socket.emit(‘online_count’, { count: io.engine.clientsCount });
