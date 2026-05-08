@@ -49,7 +49,7 @@ body: JSON.stringify({ telegram_id: tid, amount: amount, type: amount > 0 ? ‘d
 return bal;
 }
 
-bot.onText(//start/, async (msg) => {
+bot.onText(/\/start/, async (msg) => {
 const tid = msg.from.id;
 const name = msg.from.username || msg.from.first_name || ‘Player’;
 await upsertUser(tid, name);
@@ -75,7 +75,7 @@ bot.answerCallbackQuery(q.id, { text: ‘Balance: ’ + (u ? u.balance : 0) + �
 return;
 }
 if (q.data.startsWith(‘dep_’)) {
-const amt = parseInt(q.data.split(’*’)[1]);
+const amt = parseInt(q.data.split('_')[1]);
 bot.sendInvoice(tid, ‘Add ’ + amt + ’ Stars’, ‘Deposit ’ + amt + ’ Stars to play RPS’, ’dep*’ + amt + ‘_’ + Date.now(), ‘’, ‘XTR’, [{ label: amt + ’ Stars’, amount: amt }]);
 }
 bot.answerCallbackQuery(q.id);
