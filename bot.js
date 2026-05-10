@@ -83,12 +83,9 @@ const u = await getUser(tid);
 bot.sendMessage(tid, ‘Welcome to RPS Stars!\n\nBalance: ’ + (u ? u.balance : 0) + ’ Stars\n\nDeposit Stars to play!’, {
 reply_markup: {
 inline_keyboard: [
-[{ text: ‘Play Game’, web_app: { url: ‘https://backgammon-app.vercel.app’ } }],
-[{ text: ‘Deposit 76 Stars’, callback_data: ‘dep_76’ }],
-[{ text: ‘Deposit 152 Stars’, callback_data: ‘dep_152’ }],
-[{ text: ‘Deposit 304 Stars’, callback_data: ‘dep_304’ }],
-[{ text: ‘My Balance’, callback_data: ‘balance’ }],
-[{ text: ‘Withdraw Stars’, callback_data: ‘withdraw’ }]
+[{ text: ‘🎮 Play Game’, web_app: { url: ‘https://backgammon-app.vercel.app’ } }],
+[{ text: ‘⭐ 76 Stars’, callback_data: ‘dep_76’ }, { text: ‘⭐ 152 Stars’, callback_data: ‘dep_152’ }, { text: ‘⭐ 304 Stars’, callback_data: ‘dep_304’ }],
+[{ text: ‘💰 My Balance’, callback_data: ‘balance’ }, { text: ‘💸 Withdraw’, callback_data: ‘withdraw’ }]
 ]
 }
 });
